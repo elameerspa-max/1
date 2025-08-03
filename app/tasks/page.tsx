@@ -34,22 +34,22 @@ interface TaskWithDetails {
   due_date?: string
   created_at: string
   assigned_to?: string
-  assigned_user?: { name: string } | null
+  users?: { name: string } | null
   orders: {
-    clients: { name: string } | null
+    users: { name: string } | null
     services: { service_name: string } | null
   } | null
 }
 
 interface Order {
   id: string
-  clients: { name: string } | null
+  users: { name: string } | null
   services: { service_name: string } | null
 }
 
 interface TeamMember {
   id: string
-  user: { name: string } | null
+  users: { name: string } | null
 }
 
 export default function TasksPage() {
@@ -88,9 +88,9 @@ export default function TasksPage() {
           due_date,
           created_at,
           assigned_to,
-          assigned_user:users!assigned_to(name),
+          users(name),
           orders!inner(
-            clients!inner(name),
+            users!inner(name),
             services!inner(service_name)
           )
         `)
@@ -111,7 +111,7 @@ export default function TasksPage() {
         .from("orders")
         .select(`
           id,
-          clients!inner(name),
+          users!inner(name),
           services!inner(service_name)
         `)
         .in("status", ["pending", "in_progress"])
@@ -127,7 +127,7 @@ export default function TasksPage() {
     try {
       const { data, error } = await supabase.from("team_members").select(`
           id,
-          user:users!user_id(name)
+          users!inner(name)
         `)
 
       if (error) throw error
@@ -229,7 +229,7 @@ export default function TasksPage() {
     (task) =>
       task.task_name.toLowerCase().includes(searchTerm.toLowerCase()) ||
       task.task_description?.toLowerCase().includes(searchTerm.toLowerCase()) ||
-      task.orders?.clients?.name?.toLowerCase().includes(searchTerm.toLowerCase()),
+      task.orders?.users?.name?.toLowerCase().includes(searchTerm.toLowerCase()),
   )
 
   const tasksByStatus = {
@@ -263,7 +263,7 @@ export default function TasksPage() {
             <div className="space-y-2">
               <div className="flex items-center gap-2 text-xs text-gray-500">
                 <User className="h-3 w-3" />
-                <span>{task.orders?.clients?.name || "غير محدد"}</span>
+                <span>{task.orders?.users?.name || "غير محدد"}</span>
               </div>
 
               {task.due_date && (
@@ -273,12 +273,12 @@ export default function TasksPage() {
                 </div>
               )}
 
-              {task.assigned_user?.name && (
+              {task.users?.name && (
                 <div className="flex items-center gap-2 text-xs">
                   <div className="w-5 h-5 bg-blue-100 rounded-full flex items-center justify-center">
-                    <span className="text-xs font-medium text-blue-600">{task.assigned_user.name.charAt(0)}</span>
+                    <span className="text-xs font-medium text-blue-600">{task.users.name.charAt(0)}</span>
                   </div>
-                  <span className="text-gray-600">{task.assigned_user.name}</span>
+                  <span className="text-gray-600">{task.users.name}</span>
                 </div>
               )}
             </div>
@@ -333,7 +333,7 @@ export default function TasksPage() {
                         <SelectContent>
                           {orders.map((order) => (
                             <SelectItem key={order.id} value={order.id}>
-                              {order.services?.service_name} - {order.clients?.name}
+                              {order.services?.service_name} - {order.users?.name}
                             </SelectItem>
                           ))}
                         </SelectContent>
@@ -371,7 +371,7 @@ export default function TasksPage() {
                         <SelectContent>
                           {teamMembers.map((member) => (
                             <SelectItem key={member.id} value={member.id}>
-                              {member.user?.name || "غير محدد"}
+                              {member.users?.name || "غير محدد"}
                             </SelectItem>
                           ))}
                         </SelectContent>
@@ -478,7 +478,7 @@ export default function TasksPage() {
                         <div>
                           <h3 className="font-semibold text-lg">{task.task_name}</h3>
                           <p className="text-gray-600">
-                            {task.orders?.services?.service_name} - {task.orders?.clients?.name}
+                            {task.orders?.services?.service_name} - {task.orders?.users?.name}
                           </p>
                           {task.task_description && (
                             <p className="text-sm text-gray-500 mt-1 line-clamp-2">{task.task_description}</p>

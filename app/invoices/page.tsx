@@ -9,78 +9,54 @@ import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog"
-import {
-  FileText,
-  Plus,
-  Search,
-  Download,
-  Send,
-  Eye,
-  DollarSign,
-  Calendar,
-  User,
-  Building,
-  MoreHorizontal,
-} from "lucide-react"
+import { DollarSign, Plus, Search, Eye, Download, Send, Calendar, User, FileText, CreditCard } from "lucide-react"
 import { supabase } from "@/lib/supabase"
 
 interface InvoiceWithDetails {
   id: string
-  invoice_number: string
   amount: number
-  tax_amount: number
-  total_amount: number
-  status: "draft" | "sent" | "paid" | "overdue"
-  due_date: string
+  status: string
+  issue_date: string
   created_at: string
-  orders: {
-    clients: {
-      name: string
-      email: string
-      company?: string
-    } | null
-    services: {
-      service_name: string
-      price: number
-    } | null
-  } | null
+  users: { name: string; email: string; whatsapp_number?: string } | null
 }
 
-interface Order {
+interface Client {
   id: string
-  clients: {
-    name: string
-    email: string
-    company?: string
-  } | null
-  services: {
-    service_name: string
-    price: number
-  } | null
-  total_amount: number
+  name: string
+  email: string
 }
 
 export default function InvoicesPage() {
   const [invoices, setInvoices] = useState<InvoiceWithDetails[]>([])
-  const [orders, setOrders] = useState<Order[]>([])
+  const [clients, setClients] = useState<Client[]>([])
   const [loading, setLoading] = useState(true)
   const [searchTerm, setSearchTerm] = useState("")
-  const [statusFilter, setStatusFilter] = useState<string>("all")
+  const [statusFilter, setStatusFilter] = useState("all")
   const [isAddDialogOpen, setIsAddDialogOpen] = useState(false)
-  const [selectedInvoice, setSelectedInvoice] = useState<InvoiceWithDetails | null>(null)
-  const [isViewDialogOpen, setIsViewDialogOpen] = useState(false)
 
   const [newInvoice, setNewInvoice] = useState({
-    order_id: "",
+    client_id: "",
+    amount: "",
+    description: "",
     due_date: "",
-    tax_rate: 17, // 17% VAT in Palestine
-    notes: "",
+  })
+
+  const [stats, setStats] = useState({
+    totalAmount: 0,
+    paidAmount: 0,
+    unpaidAmount: 0,
+    overdueAmount: 0,
   })
 
   useEffect(() => {
     fetchInvoices()
-    fetchOrders()
+    fetchClients()
   }, [])
+
+  useEffect(() => {
+    calculateStats()
+  }, [invoices])
 
   const fetchInvoices = async () => {
     try {
@@ -88,17 +64,11 @@ export default function InvoicesPage() {
         .from("invoices")
         .select(`
           id,
-          invoice_number,
           amount,
-          tax_amount,
-          total_amount,
           status,
-          due_date,
+          issue_date,
           created_at,
-          orders!inner(
-            clients!inner(name, email, company),
-            services!inner(service_name, price)
-          )
+          users!inner(name, email, whatsapp_number)
         `)
         .order("created_at", { ascending: false })
 
@@ -111,56 +81,42 @@ export default function InvoicesPage() {
     }
   }
 
-  const fetchOrders = async () => {
+  const fetchClients = async () => {
     try {
-      const { data, error } = await supabase
-        .from("orders")
-        .select(`
-          id,
-          total_amount,
-          clients!inner(name, email, company),
-          services!inner(service_name, price)
-        `)
-        .eq("status", "completed")
-        .not("id", "in", `(SELECT order_id FROM invoices)`)
+      const { data, error } = await supabase.from("users").select("id, name, email").eq("role", "client")
 
       if (error) throw error
-      setOrders(data || [])
+      setClients(data || [])
     } catch (error) {
-      console.error("Error fetching orders:", error)
+      console.error("Error fetching clients:", error)
     }
   }
 
-  const generateInvoiceNumber = () => {
-    const date = new Date()
-    const year = date.getFullYear()
-    const month = String(date.getMonth() + 1).padStart(2, "0")
-    const random = Math.floor(Math.random() * 1000)
-      .toString()
-      .padStart(3, "0")
-    return `INV-${year}${month}-${random}`
+  const calculateStats = () => {
+    const totalAmount = invoices.reduce((sum, invoice) => sum + invoice.amount, 0)
+    const paidAmount = invoices
+      .filter((invoice) => invoice.status === "paid")
+      .reduce((sum, invoice) => sum + invoice.amount, 0)
+    const unpaidAmount = invoices
+      .filter((invoice) => invoice.status === "unpaid")
+      .reduce((sum, invoice) => sum + invoice.amount, 0)
+    const overdueAmount = invoices
+      .filter((invoice) => invoice.status === "overdue")
+      .reduce((sum, invoice) => sum + invoice.amount, 0)
+
+    setStats({ totalAmount, paidAmount, unpaidAmount, overdueAmount })
   }
 
   const createInvoice = async () => {
     try {
-      const selectedOrder = orders.find((order) => order.id === newInvoice.order_id)
-      if (!selectedOrder) return
-
-      const amount = selectedOrder.total_amount
-      const taxAmount = (amount * newInvoice.tax_rate) / 100
-      const totalAmount = amount + taxAmount
-
       const { data, error } = await supabase
         .from("invoices")
         .insert([
           {
-            order_id: newInvoice.order_id,
-            invoice_number: generateInvoiceNumber(),
-            amount: amount,
-            tax_amount: taxAmount,
-            total_amount: totalAmount,
-            due_date: newInvoice.due_date,
-            status: "draft",
+            user_id: newInvoice.client_id,
+            amount: Number.parseFloat(newInvoice.amount),
+            status: "unpaid",
+            issue_date: new Date().toISOString(),
           },
         ])
         .select()
@@ -168,13 +124,7 @@ export default function InvoicesPage() {
       if (error) throw error
 
       await fetchInvoices()
-      await fetchOrders()
-      setNewInvoice({
-        order_id: "",
-        due_date: "",
-        tax_rate: 17,
-        notes: "",
-      })
+      setNewInvoice({ client_id: "", amount: "", description: "", due_date: "" })
       setIsAddDialogOpen(false)
     } catch (error) {
       console.error("Error creating invoice:", error)
@@ -182,15 +132,13 @@ export default function InvoicesPage() {
     }
   }
 
-  const updateInvoiceStatus = async (invoiceId: string, newStatus: string) => {
+  const updateInvoiceStatus = async (id: string, status: string) => {
     try {
-      const { error } = await supabase.from("invoices").update({ status: newStatus }).eq("id", invoiceId)
+      const { error } = await supabase.from("invoices").update({ status }).eq("id", id)
 
       if (error) throw error
 
-      setInvoices(
-        invoices.map((invoice) => (invoice.id === invoiceId ? { ...invoice, status: newStatus as any } : invoice)),
-      )
+      setInvoices(invoices.map((invoice) => (invoice.id === id ? { ...invoice, status } : invoice)))
     } catch (error) {
       console.error("Error updating invoice status:", error)
     }
@@ -198,41 +146,61 @@ export default function InvoicesPage() {
 
   const getStatusBadge = (status: string) => {
     const statusMap = {
-      draft: { label: "مسودة", color: "bg-gray-100 text-gray-800" },
-      sent: { label: "مرسلة", color: "bg-blue-100 text-blue-800" },
-      paid: { label: "مدفوعة", color: "bg-green-100 text-green-800" },
-      overdue: { label: "متأخرة", color: "bg-red-100 text-red-800" },
+      paid: { label: "مدفوع", variant: "default" as const, color: "bg-green-100 text-green-800" },
+      unpaid: { label: "غير مدفوع", variant: "secondary" as const, color: "bg-yellow-100 text-yellow-800" },
+      overdue: { label: "متأخر", variant: "destructive" as const, color: "bg-red-100 text-red-800" },
     }
 
     const statusInfo = statusMap[status as keyof typeof statusMap] || {
       label: status,
+      variant: "outline" as const,
       color: "bg-gray-100 text-gray-800",
     }
 
     return <Badge className={statusInfo.color}>{statusInfo.label}</Badge>
   }
 
-  const isOverdue = (dueDate: string, status: string) => {
-    return new Date(dueDate) < new Date() && status !== "paid"
-  }
-
   const filteredInvoices = invoices.filter((invoice) => {
     const matchesSearch =
-      invoice.invoice_number.toLowerCase().includes(searchTerm.toLowerCase()) ||
-      invoice.orders?.clients?.name?.toLowerCase().includes(searchTerm.toLowerCase()) ||
-      invoice.orders?.clients?.company?.toLowerCase().includes(searchTerm.toLowerCase())
+      invoice.users?.name?.toLowerCase().includes(searchTerm.toLowerCase()) ||
+      invoice.users?.email?.toLowerCase().includes(searchTerm.toLowerCase()) ||
+      invoice.amount.toString().includes(searchTerm)
 
     const matchesStatus = statusFilter === "all" || invoice.status === statusFilter
 
     return matchesSearch && matchesStatus
   })
 
-  const totalStats = {
-    total: invoices.reduce((sum, inv) => sum + inv.total_amount, 0),
-    paid: invoices.filter((inv) => inv.status === "paid").reduce((sum, inv) => sum + inv.total_amount, 0),
-    pending: invoices.filter((inv) => inv.status === "sent").reduce((sum, inv) => sum + inv.total_amount, 0),
-    overdue: invoices.filter((inv) => inv.status === "overdue").reduce((sum, inv) => sum + inv.total_amount, 0),
-  }
+  const statsCards = [
+    {
+      title: "إجمالي الفواتير",
+      value: `${stats.totalAmount.toLocaleString()} ج.م`,
+      icon: FileText,
+      color: "text-blue-600",
+      bgColor: "bg-blue-100",
+    },
+    {
+      title: "المبالغ المحصلة",
+      value: `${stats.paidAmount.toLocaleString()} ج.م`,
+      icon: CreditCard,
+      color: "text-green-600",
+      bgColor: "bg-green-100",
+    },
+    {
+      title: "المبالغ المستحقة",
+      value: `${stats.unpaidAmount.toLocaleString()} ج.م`,
+      icon: DollarSign,
+      color: "text-yellow-600",
+      bgColor: "bg-yellow-100",
+    },
+    {
+      title: "المبالغ المتأخرة",
+      value: `${stats.overdueAmount.toLocaleString()} ج.م`,
+      icon: Calendar,
+      color: "text-red-600",
+      bgColor: "bg-red-100",
+    },
+  ]
 
   return (
     <div className="flex min-h-screen">
@@ -254,33 +222,48 @@ export default function InvoicesPage() {
                   فاتورة جديدة
                 </Button>
               </DialogTrigger>
-              <DialogContent className="max-w-md">
+              <DialogContent>
                 <DialogHeader>
                   <DialogTitle>إنشاء فاتورة جديدة</DialogTitle>
                 </DialogHeader>
                 <div className="space-y-4">
                   <div>
-                    <Label htmlFor="order">الطلب</Label>
+                    <Label htmlFor="client">العميل</Label>
                     <Select
-                      value={newInvoice.order_id}
-                      onValueChange={(value) => setNewInvoice({ ...newInvoice, order_id: value })}
+                      value={newInvoice.client_id}
+                      onValueChange={(value) => setNewInvoice({ ...newInvoice, client_id: value })}
                     >
                       <SelectTrigger>
-                        <SelectValue placeholder="اختر الطلب" />
+                        <SelectValue placeholder="اختر العميل" />
                       </SelectTrigger>
                       <SelectContent>
-                        {orders.map((order) => (
-                          <SelectItem key={order.id} value={order.id}>
-                            <div className="flex flex-col">
-                              <span>{order.services?.service_name}</span>
-                              <span className="text-sm text-gray-500">
-                                {order.clients?.name} - ₪{order.total_amount}
-                              </span>
-                            </div>
+                        {clients.map((client) => (
+                          <SelectItem key={client.id} value={client.id}>
+                            {client.name} - {client.email}
                           </SelectItem>
                         ))}
                       </SelectContent>
                     </Select>
+                  </div>
+
+                  <div>
+                    <Label htmlFor="amount">المبلغ (ج.م)</Label>
+                    <Input
+                      type="number"
+                      step="0.01"
+                      value={newInvoice.amount}
+                      onChange={(e) => setNewInvoice({ ...newInvoice, amount: e.target.value })}
+                      placeholder="0.00"
+                    />
+                  </div>
+
+                  <div>
+                    <Label htmlFor="description">وصف الفاتورة</Label>
+                    <Input
+                      value={newInvoice.description}
+                      onChange={(e) => setNewInvoice({ ...newInvoice, description: e.target.value })}
+                      placeholder="وصف الخدمة أو المنتج"
+                    />
                   </div>
 
                   <div>
@@ -292,21 +275,10 @@ export default function InvoicesPage() {
                     />
                   </div>
 
-                  <div>
-                    <Label htmlFor="tax_rate">معدل الضريبة (%)</Label>
-                    <Input
-                      type="number"
-                      value={newInvoice.tax_rate}
-                      onChange={(e) => setNewInvoice({ ...newInvoice, tax_rate: Number(e.target.value) })}
-                      min="0"
-                      max="100"
-                    />
-                  </div>
-
                   <Button
                     onClick={createInvoice}
                     className="w-full"
-                    disabled={!newInvoice.order_id || !newInvoice.due_date}
+                    disabled={!newInvoice.client_id || !newInvoice.amount}
                   >
                     إنشاء الفاتورة
                   </Button>
@@ -316,81 +288,47 @@ export default function InvoicesPage() {
           </div>
 
           {/* Stats Cards */}
-          <div className="grid gap-4 md:grid-cols-4">
-            <Card>
-              <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-                <CardTitle className="text-sm font-medium">إجمالي الفواتير</CardTitle>
-                <DollarSign className="h-4 w-4 text-muted-foreground" />
-              </CardHeader>
-              <CardContent>
-                <div className="text-2xl font-bold">₪{totalStats.total.toLocaleString()}</div>
-                <p className="text-xs text-muted-foreground">جميع الفواتير</p>
-              </CardContent>
-            </Card>
-
-            <Card>
-              <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-                <CardTitle className="text-sm font-medium">المدفوعة</CardTitle>
-                <DollarSign className="h-4 w-4 text-green-600" />
-              </CardHeader>
-              <CardContent>
-                <div className="text-2xl font-bold text-green-600">₪{totalStats.paid.toLocaleString()}</div>
-                <p className="text-xs text-muted-foreground">تم الدفع</p>
-              </CardContent>
-            </Card>
-
-            <Card>
-              <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-                <CardTitle className="text-sm font-medium">في الانتظار</CardTitle>
-                <DollarSign className="h-4 w-4 text-blue-600" />
-              </CardHeader>
-              <CardContent>
-                <div className="text-2xl font-bold text-blue-600">₪{totalStats.pending.toLocaleString()}</div>
-                <p className="text-xs text-muted-foreground">مرسلة</p>
-              </CardContent>
-            </Card>
-
-            <Card>
-              <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-                <CardTitle className="text-sm font-medium">متأخرة</CardTitle>
-                <DollarSign className="h-4 w-4 text-red-600" />
-              </CardHeader>
-              <CardContent>
-                <div className="text-2xl font-bold text-red-600">₪{totalStats.overdue.toLocaleString()}</div>
-                <p className="text-xs text-muted-foreground">متأخرة الدفع</p>
-              </CardContent>
-            </Card>
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
+            {statsCards.map((card, index) => (
+              <Card key={index} className="hover:shadow-lg transition-shadow">
+                <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+                  <CardTitle className="text-sm font-medium text-gray-600">{card.title}</CardTitle>
+                  <div className={`p-2 rounded-full ${card.bgColor}`}>
+                    <card.icon className={`h-4 w-4 ${card.color}`} />
+                  </div>
+                </CardHeader>
+                <CardContent>
+                  <div className="text-2xl font-bold">{card.value}</div>
+                </CardContent>
+              </Card>
+            ))}
           </div>
 
           {/* Filters */}
           <Card>
             <CardContent className="p-4">
-              <div className="flex flex-col md:flex-row gap-4">
-                <div className="flex-1">
-                  <div className="relative">
-                    <Search className="absolute right-3 top-1/2 transform -translate-y-1/2 text-gray-400 h-4 w-4" />
-                    <Input
-                      placeholder="البحث في الفواتير..."
-                      value={searchTerm}
-                      onChange={(e) => setSearchTerm(e.target.value)}
-                      className="pr-10"
-                    />
-                  </div>
+              <div className="flex items-center gap-4">
+                <div className="relative flex-1">
+                  <Search className="absolute right-3 top-1/2 transform -translate-y-1/2 text-gray-400 h-4 w-4" />
+                  <Input
+                    placeholder="البحث في الفواتير..."
+                    value={searchTerm}
+                    onChange={(e) => setSearchTerm(e.target.value)}
+                    className="pr-10"
+                  />
                 </div>
-                <div className="flex gap-2">
-                  <Select value={statusFilter} onValueChange={setStatusFilter}>
-                    <SelectTrigger className="w-40">
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="all">جميع الحالات</SelectItem>
-                      <SelectItem value="draft">مسودة</SelectItem>
-                      <SelectItem value="sent">مرسلة</SelectItem>
-                      <SelectItem value="paid">مدفوعة</SelectItem>
-                      <SelectItem value="overdue">متأخرة</SelectItem>
-                    </SelectContent>
-                  </Select>
-                </div>
+
+                <Select value={statusFilter} onValueChange={setStatusFilter}>
+                  <SelectTrigger className="w-48">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="all">جميع الفواتير</SelectItem>
+                    <SelectItem value="paid">مدفوع</SelectItem>
+                    <SelectItem value="unpaid">غير مدفوع</SelectItem>
+                    <SelectItem value="overdue">متأخر</SelectItem>
+                  </SelectContent>
+                </Select>
               </div>
             </CardContent>
           </Card>
@@ -403,10 +341,10 @@ export default function InvoicesPage() {
                   <CardContent className="p-6">
                     <div className="flex items-center justify-between">
                       <div className="space-y-2">
-                        <div className="h-4 bg-gray-200 rounded w-32"></div>
-                        <div className="h-3 bg-gray-200 rounded w-48"></div>
+                        <div className="h-4 bg-gray-200 rounded w-48"></div>
+                        <div className="h-3 bg-gray-200 rounded w-32"></div>
                       </div>
-                      <div className="h-6 bg-gray-200 rounded w-16"></div>
+                      <div className="h-6 bg-gray-200 rounded w-20"></div>
                     </div>
                   </CardContent>
                 </Card>
@@ -423,80 +361,41 @@ export default function InvoicesPage() {
                           <FileText className="h-6 w-6 text-blue-600" />
                         </div>
                         <div>
-                          <div className="flex items-center gap-2 mb-1">
-                            <h3 className="font-semibold text-lg">{invoice.invoice_number}</h3>
-                            {getStatusBadge(invoice.status)}
-                            {isOverdue(invoice.due_date, invoice.status) && (
-                              <Badge className="bg-red-100 text-red-800">متأخرة</Badge>
-                            )}
+                          <h3 className="font-semibold text-lg">فاتورة #{invoice.id.slice(0, 8)}</h3>
+                          <div className="flex items-center gap-2 text-gray-600">
+                            <User className="h-4 w-4" />
+                            <span>{invoice.users?.name || "عميل غير محدد"}</span>
                           </div>
-                          <div className="flex items-center gap-4 text-sm text-gray-600">
-                            <div className="flex items-center gap-1">
-                              <User className="h-4 w-4" />
-                              <span>{invoice.orders?.clients?.name}</span>
-                            </div>
-                            {invoice.orders?.clients?.company && (
-                              <div className="flex items-center gap-1">
-                                <Building className="h-4 w-4" />
-                                <span>{invoice.orders?.clients?.company}</span>
-                              </div>
-                            )}
-                            <div className="flex items-center gap-1">
-                              <Calendar className="h-4 w-4" />
-                              <span>الاستحقاق: {new Date(invoice.due_date).toLocaleDateString("ar-EG")}</span>
-                            </div>
+                          <div className="flex items-center gap-2 text-sm text-gray-500">
+                            <Calendar className="h-4 w-4" />
+                            <span>تاريخ الإصدار: {new Date(invoice.issue_date).toLocaleDateString("ar-EG")}</span>
                           </div>
-                          <p className="text-sm text-gray-500 mt-1">{invoice.orders?.services?.service_name}</p>
                         </div>
                       </div>
 
                       <div className="flex items-center gap-4">
                         <div className="text-left">
-                          <div className="text-2xl font-bold text-gray-900">
-                            ₪{invoice.total_amount.toLocaleString()}
-                          </div>
-                          <div className="text-sm text-gray-500">
-                            المبلغ: ₪{invoice.amount.toLocaleString()} + ضريبة: ₪{invoice.tax_amount.toLocaleString()}
-                          </div>
+                          <p className="font-bold text-2xl text-green-600">{invoice.amount.toLocaleString()} ج.م</p>
+                          {getStatusBadge(invoice.status)}
                         </div>
 
                         <div className="flex gap-2">
-                          <Button
-                            variant="ghost"
-                            size="sm"
-                            onClick={() => {
-                              setSelectedInvoice(invoice)
-                              setIsViewDialogOpen(true)
-                            }}
-                          >
+                          <Button variant="ghost" size="sm">
                             <Eye className="h-4 w-4" />
                           </Button>
-
-                          {invoice.status === "draft" && (
-                            <Button variant="ghost" size="sm" onClick={() => updateInvoiceStatus(invoice.id, "sent")}>
-                              <Send className="h-4 w-4" />
-                            </Button>
-                          )}
-
-                          {invoice.status === "sent" && (
-                            <Button
-                              variant="ghost"
-                              size="sm"
-                              onClick={() => updateInvoiceStatus(invoice.id, "paid")}
-                              className="text-green-600 hover:text-green-700"
-                            >
-                              <DollarSign className="h-4 w-4" />
-                            </Button>
-                          )}
-
                           <Button variant="ghost" size="sm">
                             <Download className="h-4 w-4" />
                           </Button>
-
                           <Button variant="ghost" size="sm">
-                            <MoreHorizontal className="h-4 w-4" />
+                            <Send className="h-4 w-4" />
                           </Button>
                         </div>
+
+                        {invoice.status === "unpaid" && (
+                          <Button size="sm" onClick={() => updateInvoiceStatus(invoice.id, "paid")}>
+                            تسجيل الدفع
+                          </Button>
+                        )}
                       </div>
                     </div>
                   </CardContent>
@@ -514,97 +413,6 @@ export default function InvoicesPage() {
               </CardContent>
             </Card>
           )}
-
-          {/* Invoice View Dialog */}
-          <Dialog open={isViewDialogOpen} onOpenChange={setIsViewDialogOpen}>
-            <DialogContent className="max-w-2xl">
-              <DialogHeader>
-                <DialogTitle>عرض الفاتورة</DialogTitle>
-              </DialogHeader>
-              {selectedInvoice && (
-                <div className="space-y-6">
-                  <div className="flex justify-between items-start">
-                    <div>
-                      <h2 className="text-2xl font-bold">{selectedInvoice.invoice_number}</h2>
-                      <p className="text-gray-600">
-                        تاريخ الإنشاء: {new Date(selectedInvoice.created_at).toLocaleDateString("ar-EG")}
-                      </p>
-                    </div>
-                    {getStatusBadge(selectedInvoice.status)}
-                  </div>
-
-                  <div className="grid md:grid-cols-2 gap-6">
-                    <div>
-                      <h3 className="font-semibold mb-2">معلومات العميل</h3>
-                      <div className="space-y-1 text-sm">
-                        <p>
-                          <strong>الاسم:</strong> {selectedInvoice.orders?.clients?.name}
-                        </p>
-                        <p>
-                          <strong>البريد:</strong> {selectedInvoice.orders?.clients?.email}
-                        </p>
-                        {selectedInvoice.orders?.clients?.company && (
-                          <p>
-                            <strong>الشركة:</strong> {selectedInvoice.orders?.clients?.company}
-                          </p>
-                        )}
-                      </div>
-                    </div>
-
-                    <div>
-                      <h3 className="font-semibold mb-2">تفاصيل الفاتورة</h3>
-                      <div className="space-y-1 text-sm">
-                        <p>
-                          <strong>الخدمة:</strong> {selectedInvoice.orders?.services?.service_name}
-                        </p>
-                        <p>
-                          <strong>تاريخ الاستحقاق:</strong>{" "}
-                          {new Date(selectedInvoice.due_date).toLocaleDateString("ar-EG")}
-                        </p>
-                      </div>
-                    </div>
-                  </div>
-
-                  <div className="border-t pt-4">
-                    <div className="space-y-2">
-                      <div className="flex justify-between">
-                        <span>المبلغ الأساسي:</span>
-                        <span>₪{selectedInvoice.amount.toLocaleString()}</span>
-                      </div>
-                      <div className="flex justify-between">
-                        <span>الضريبة:</span>
-                        <span>₪{selectedInvoice.tax_amount.toLocaleString()}</span>
-                      </div>
-                      <div className="flex justify-between font-bold text-lg border-t pt-2">
-                        <span>المجموع:</span>
-                        <span>₪{selectedInvoice.total_amount.toLocaleString()}</span>
-                      </div>
-                    </div>
-                  </div>
-
-                  <div className="flex gap-2 pt-4">
-                    <Button className="flex-1">
-                      <Download className="h-4 w-4 ml-2" />
-                      تحميل PDF
-                    </Button>
-                    {selectedInvoice.status === "draft" && (
-                      <Button
-                        variant="outline"
-                        className="flex-1 bg-transparent"
-                        onClick={() => {
-                          updateInvoiceStatus(selectedInvoice.id, "sent")
-                          setIsViewDialogOpen(false)
-                        }}
-                      >
-                        <Send className="h-4 w-4 ml-2" />
-                        إرسال
-                      </Button>
-                    )}
-                  </div>
-                </div>
-              )}
-            </DialogContent>
-          </Dialog>
         </div>
       </main>
     </div>
